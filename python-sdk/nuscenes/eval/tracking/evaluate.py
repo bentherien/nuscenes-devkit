@@ -44,6 +44,7 @@ class TrackingEval:
                  nusc_version: str,
                  nusc_dataroot: str,
                  verbose: bool = True,
+                 output_errors: bool = False,
                  render_classes: List[str] = None):
         """
         Initialize a TrackingEval object.
@@ -62,6 +63,7 @@ class TrackingEval:
         self.output_dir = output_dir
         self.verbose = verbose
         self.render_classes = render_classes
+        self.output_errors = output_errors
 
         # Check result file exists.
         assert os.path.exists(result_path), 'Error: The result file does not exist!'
@@ -112,8 +114,10 @@ class TrackingEval:
         """
         start_time = time.time()
         metrics = TrackingMetrics(self.cfg)
-        error_tracker = {}
-        error_tracker_coi = ['car'] # classes of interest
+
+        if self.output_errors:
+            error_tracker = {}
+            error_tracker_coi = [cn for cn in self.cfg.class_names] # classes of interest
 
         # -----------------------------------
         # Step 1: Accumulate metric data for all classes and distance thresholds.
@@ -130,21 +134,23 @@ class TrackingEval:
                                          verbose=self.verbose,
                                          output_dir=self.output_dir,
                                          render_classes=self.render_classes,
+                                         track_errors=self.output_errors,
                                          nuscenes_info=self.nusc)
             curr_md = curr_ev.accumulate()
             metric_data_list.set(curr_class_name, curr_md)
+
             # Only track errors for classes of interest
-            if curr_class_name in error_tracker_coi:
+            if self.output_errors and curr_class_name in error_tracker_coi:
                 error_tracker[curr_class_name] = curr_ev.error_events
-                
 
         for class_name in self.cfg.class_names:
             accumulate_class(class_name)
 
         # Save Errors in JSON
-        error_save_dir = os.path.join(self.output_dir, "errors.json")
-        with open(error_save_dir, "w") as file:
-            json.dump(error_tracker, file)
+        if self.output_errors:
+            error_save_dir = os.path.join(self.output_dir, "errors.json")
+            with open(error_save_dir, "w") as file:
+                json.dump(error_tracker, file)
 
         # -----------------------------------
         # Step 2: Aggregate metrics from the metric data.

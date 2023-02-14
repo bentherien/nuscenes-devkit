@@ -34,6 +34,8 @@ if __name__ == "__main__":
                         help='Whether to render statistic curves to disk.')
     parser.add_argument('--verbose', type=int, default=1,
                         help='Whether to print to stdout.')
+    parser.add_argument('--output_errors', type=bool, default=False,
+                        help='Whether to print to stdout.')
     args = parser.parse_args()
 
     curr_dir_ = os.getcwd()
@@ -49,6 +51,7 @@ if __name__ == "__main__":
     dataroot_ = args.dataroot
     version_ = args.version
     config_path = args.config_path
+    output_errors = args.output_errors
     render_curves_ = bool(args.render_curves)
     verbose_ = bool(args.verbose)
 
@@ -59,7 +62,7 @@ if __name__ == "__main__":
             cfg_ = TrackingConfig.deserialize(json.load(_f))
 
     nusc_eval = TrackingEval(config=cfg_, result_path=result_path_, eval_set=eval_set_, output_dir=output_dir_,
-                             nusc_version=version_, nusc_dataroot=dataroot_, verbose=verbose_)
+                             nusc_version=version_, nusc_dataroot=dataroot_, output_errors=output_errors, verbose=verbose_)
     nusc_eval.main(render_curves=render_curves_)
     # sys.stdout.close()
     

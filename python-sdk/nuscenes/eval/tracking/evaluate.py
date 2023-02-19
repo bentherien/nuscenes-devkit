@@ -118,6 +118,7 @@ class TrackingEval:
         if self.output_errors:
             error_tracker = {}
             error_tracker_coi = [cn for cn in self.cfg.class_names] # classes of interest
+            fragment_tracker = {}
 
         # -----------------------------------
         # Step 1: Accumulate metric data for all classes and distance thresholds.
@@ -142,6 +143,8 @@ class TrackingEval:
             # Only track errors for classes of interest
             if self.output_errors and curr_class_name in error_tracker_coi:
                 error_tracker[curr_class_name] = curr_ev.error_events
+                fragment_tracker[curr_class_name] = curr_ev.frag_events
+                
 
         for class_name in self.cfg.class_names:
             accumulate_class(class_name)
@@ -151,6 +154,10 @@ class TrackingEval:
             error_save_dir = os.path.join(self.output_dir, "errors.json")
             with open(error_save_dir, "w") as file:
                 json.dump(error_tracker, file)
+            
+            frags_save_dir = os.path.join(self.output_dir, "fragments.json")
+            with open(frags_save_dir, "w") as file:
+                json.dump(fragment_tracker, file)
 
         # -----------------------------------
         # Step 2: Aggregate metrics from the metric data.

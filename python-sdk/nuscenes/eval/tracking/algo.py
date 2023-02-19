@@ -89,6 +89,7 @@ class TrackingEvaluation(object):
             "MISS": "num_miss", 
             "FP": "num_fp",
         }
+        self.frag_events = {}
 
         self.n_scenes = len(self.tracks_gt)
         self.nusc = nuscenes_info
@@ -242,13 +243,16 @@ class TrackingEvaluation(object):
         thresh_name = None
         if threshold is not None:
             thresh_name = self.name_gen(threshold)
+            self.frag_events[thresh_name] = []
 
         # Get mapping from scene_id to NuScenes Info index
         if self.track_errors:
             scene_id_to_nusc_idx = {}
+            nusc_idx_to_scene_idx = []
             i = 0
             for scene in self.nusc.scene:
                 scene_id_to_nusc_idx[scene['token']] = i
+                nusc_idx_to_scene_idx.append(scene['token'])
                 i += 1
 
         # Go through all frames and associate ground truth and tracker results.
@@ -258,10 +262,9 @@ class TrackingEvaluation(object):
             # Initialize accumulator and frame_id for this scene
             acc = MOTAccumulatorCustom()
             frame_id = 0  # Frame ids must be unique across all scenes
+            sample_token_list = []
 
             if self.track_errors:
-                matched_instance = set()
-                frag_instance = set()
                 nusc_idx = scene_id_to_nusc_idx[scene_id]
                 sample_token = self.nusc.scene[nusc_idx]['first_sample_token']
 
@@ -274,7 +277,6 @@ class TrackingEvaluation(object):
                 for error_type in self.errors_of_interest:
                     total_metric = self.error_type_to_count[error_type]
                     self.error_events[thresh_name][scene_id][total_metric] = 0
-                self.error_events[thresh_name][scene_id]["num_frag"] = 0
 
             # Retrieve GT and preds.
             scene_tracks_gt = self.tracks_gt[scene_id]
@@ -332,13 +334,6 @@ class TrackingEvaluation(object):
                     match_ids = matches.HId.values
                     match_scores = [tt.tracking_score for tt in frame_pred if tt.tracking_id in match_ids]
                     scores.extend(match_scores)
-                elif self.track_errors and threshold is not None:
-                    # Keep of previous matches to check for fragmentations
-                    events = acc.events.loc[frame_id]
-                    matches = events[events.Type == 'MATCH']
-                    if not matches.empty:
-                        for _, match in matches.iterrows():
-                            matched_instance.add(match.OId)
                 else:
                     events = None
 
@@ -369,11 +364,6 @@ class TrackingEvaluation(object):
                                 
                                 # If the type has a ground truth match, include details of GT
                                 if error_type in ['SWITCH', 'MISS']:
-                                    # Check if is a fragmentation
-                                    frame_errors['is_frag'] = error.OId in matched_instance
-                                    if error.OId not in frag_instance and error.OId in matched_instance and error_type=='MISS':
-                                        self.error_events[thresh_name][scene_id]["num_frag"] += 1
-                                        frag_instance.add(error.OId)
                                     # Get Ground Truth
                                     for gt in frame_gt:
                                         if gt.tracking_id == error.OId:
@@ -400,7 +390,31 @@ class TrackingEvaluation(object):
                 # Increment the frame_id, unless there are no boxes (equivalent to what motmetrics does).
                 frame_id += 1
                 if self.track_errors:
+                    sample_token_list.append(sample_token)
                     sample_token = self.nusc.get('sample', sample_token)['next']
+
+            # Store Number of Fragmentations
+            if self.track_errors and threshold is not None:
+                events = acc.events
+                gt_object_ids = acc.events['OId'].unique()
+                for obj in gt_object_ids:
+                    if obj == 'nan':
+                        continue
+                    obj_hist = acc.events[acc.events.Type != 'RAW'].loc[acc.events.OId == obj]
+                    num_frag, frag_loc = self.check_for_fragmentation(obj_hist)
+                    for frag_id in range(num_frag):
+                        # store Scene Token, Object (Annotation) ID, Frame Occured
+                        frame_num = int(frag_loc[frag_id])
+                        frag_instance = {
+                            'scene_id': scene_id,
+                            'sample_token': sample_token_list[frame_num],
+                            'prev_sample_token': sample_token_list[frame_num-1],
+                            'prev_hypothesis_id': obj_hist.HId[frame_num-1].values[0],
+                            'object_id': obj,
+                            'frame_num': frame_num,
+                            'class': self.class_name
+                        }
+                        self.frag_events[thresh_name].append(frag_instance)
 
             accs.append(acc)
 
@@ -455,3 +469,21 @@ class TrackingEvaluation(object):
         assert len(thresholds) == len(rec_interp) == self.num_thresholds
 
         return thresholds, rec_interp
+
+    def check_for_fragmentation(self, dfo):
+        """
+        Total number of switches from tracked to not tracked.
+        """
+        num_frag = 0
+        loc_of_frag = [] # store the frame_id before and after frag occurs
+        notmiss = dfo[dfo.Type != 'MISS']
+        if len(notmiss) == 0:
+            return num_frag, loc_of_frag
+        first = notmiss.index[0]
+        last = notmiss.index[-1]
+        diffs = dfo.loc[first:last].Type.apply(lambda x: 1 if x == 'MISS' else 0).diff()
+        num_frag = diffs[diffs == 1].count()
+        rel_loc_of_frag = (np.where(diffs.to_numpy() == 1.0)[0]).tolist() # +1 since we cound the first MISS as the fragment location.
+        multiidx = diffs.keys()
+        loc_of_frag = [multiidx[idx][0] for idx in rel_loc_of_frag]
+        return num_frag, loc_of_frag

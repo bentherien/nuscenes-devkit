@@ -90,6 +90,7 @@ class TrackingEvaluation(object):
             "FP": "num_fp",
         }
         self.frag_events = {}
+        self.ids_events = {}
 
         self.n_scenes = len(self.tracks_gt)
         self.nusc = nuscenes_info
@@ -244,6 +245,7 @@ class TrackingEvaluation(object):
         if threshold is not None:
             thresh_name = self.name_gen(threshold)
             self.frag_events[thresh_name] = []
+            self.ids_events[thresh_name] = []
 
         # Get mapping from scene_id to NuScenes Info index
         if self.track_errors:
@@ -376,7 +378,8 @@ class TrackingEvaluation(object):
                                                 "ego_translation" : list(gt.ego_translation),
                                                 "ego_dist" : float(gt.ego_dist),
                                                 "tracking_name" : gt.tracking_name,
-                                                "tracking_score" : float(gt.tracking_score)                                            }
+                                                "tracking_score" : float(gt.tracking_score)                                          
+                                                }
 
                                 frame_errors[error_type].append(error_entry)
                                 self.error_events[thresh_name][scene_id][total_metric] += 1
@@ -407,15 +410,42 @@ class TrackingEvaluation(object):
                         frame_num = int(frag_loc[frag_id])
                         frag_instance = {
                             'scene_id': scene_id,
+                            'object_id': obj,
                             'sample_token': sample_token_list[frame_num],
                             'prev_sample_token': sample_token_list[frame_num-1],
                             'prev_hypothesis_id': obj_hist.HId[frame_num-1].values[0],
-                            'object_id': obj,
                             'frame_num': frame_num,
                             'class': self.class_name
                         }
                         self.frag_events[thresh_name].append(frag_instance)
 
+            # Store Number of IDS
+            if self.track_errors and threshold is not None:
+                events = acc.events
+                gt_object_ids = acc.events['OId'].unique()
+                for obj in gt_object_ids:
+                    if obj == 'nan':
+                        continue
+                    obj_hist = acc.events[acc.events.Type != 'RAW'].loc[acc.events.OId == obj]
+                    num_ids, ids_loc, prev_match_loc = self.check_for_ids(obj_hist)
+                    for ids_id in range(num_ids):
+                        # store Scene Token, Object (Annotation) ID, Frame Occured
+                        frame_num = int(ids_loc[ids_id])
+                        prev_match_frame_num = int(prev_match_loc[ids_id])
+                        ids_instance = {
+                            'scene_id':str(scene_id),
+                            'object_id': str(obj),
+                            'sample_token': str(sample_token_list[frame_num]),
+                            'hypothesis_id':int(obj_hist.HId[frame_num].values[0]),
+                            'prev_match_sample_token': str(sample_token_list[prev_match_frame_num]),
+                            'prev_match_hypothesis_id': int(obj_hist.HId[prev_match_frame_num].values[0]),
+                            'frame_num': int(frame_num),
+                            'prev_match_frame_num': int(prev_match_frame_num),
+                            'from_frag': int((obj_hist.Type[frame_num-1] == 'MISS').values[0]), # if the prev frame was MISS, this SWITCH came from a fragmenetation
+                            'class': str(self.class_name)
+                        }
+                        self.ids_events[thresh_name].append(ids_instance)
+            
             accs.append(acc)
 
         # Merge accumulators
@@ -487,3 +517,27 @@ class TrackingEvaluation(object):
         multiidx = diffs.keys()
         loc_of_frag = [multiidx[idx][0] for idx in rel_loc_of_frag]
         return num_frag, loc_of_frag
+    
+    def check_for_ids(self, dfo):
+        """
+        Total number of track switches.
+        """
+        n_ids = dfo.Type.isin(["SWITCH"]).sum()
+        if n_ids == 0:
+            return n_ids, [], []
+        
+        # Get location of IDS
+        rel_loc_of_ids = (np.where(dfo.Type == "SWITCH")[0]).tolist()
+        _ = dfo.Type.apply(lambda x: 0)
+        multiidx = _.keys()
+        loc_of_ids = [multiidx[idx][0] for idx in rel_loc_of_ids]
+
+        # Get location of last match for each IDS
+        prev_matches_loc = []
+        for ids_idx in loc_of_ids:
+            prev = ids_idx - 1
+            while dfo.loc[prev].Type.values[0] not in ['SWITCH', 'MATCH'] and prev >= multiidx[0][0]:
+                prev = prev - 1
+            prev_matches_loc.append(prev)
+    
+        return n_ids, loc_of_ids, prev_matches_loc

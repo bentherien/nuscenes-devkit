@@ -120,6 +120,7 @@ class TrackingEval:
             error_tracker_coi = [cn for cn in self.cfg.class_names] # classes of interest
             fragment_tracker = {}
             ids_tracker = {}
+            neg_pos_pair_tracker = {}
 
         # -----------------------------------
         # Step 1: Accumulate metric data for all classes and distance thresholds.
@@ -146,6 +147,7 @@ class TrackingEval:
                 error_tracker[curr_class_name] = curr_ev.error_events
                 fragment_tracker[curr_class_name] = curr_ev.frag_events
                 ids_tracker[curr_class_name] = curr_ev.ids_events
+                neg_pos_pair_tracker[curr_class_name] = curr_ev.pos_neg_pairs_events
 
         for class_name in self.cfg.class_names:
             accumulate_class(class_name)
@@ -163,6 +165,10 @@ class TrackingEval:
             ids_save_dir = os.path.join(self.output_dir, "ids.json")
             with open(ids_save_dir, "w") as file:
                 json.dump(ids_tracker, file)
+            
+            neg_pos_pair_dir = os.path.join(self.output_dir, "neg_pos_pair.json")
+            with open(neg_pos_pair_dir, "w") as file:
+                json.dump(neg_pos_pair_tracker, file)
 
         # -----------------------------------
         # Step 2: Aggregate metrics from the metric data.

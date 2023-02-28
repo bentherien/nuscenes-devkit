@@ -91,6 +91,7 @@ class TrackingEvaluation(object):
         }
         self.frag_events = {}
         self.ids_events = {}
+        self.pos_neg_pairs_events = {}
 
         self.n_scenes = len(self.tracks_gt)
         self.nusc = nuscenes_info
@@ -246,6 +247,7 @@ class TrackingEvaluation(object):
             thresh_name = self.name_gen(threshold)
             self.frag_events[thresh_name] = []
             self.ids_events[thresh_name] = []
+            self.pos_neg_pairs_events[thresh_name] = []
 
         # Get mapping from scene_id to NuScenes Info index
         if self.track_errors:
@@ -276,6 +278,8 @@ class TrackingEvaluation(object):
                     self.error_events[thresh_name] = {}
                 self.error_events[thresh_name][scene_id] = {}
                 self.error_events[thresh_name][scene_id]["frame_errors"] = []
+                prev_matches_H_to_O = {} # for positive, negative pairs in IDS
+                prev_matches_O_to_H = {}
                 for error_type in self.errors_of_interest:
                     total_metric = self.error_type_to_count[error_type]
                     self.error_events[thresh_name][scene_id][total_metric] = 0
@@ -385,6 +389,76 @@ class TrackingEvaluation(object):
                                 self.error_events[thresh_name][scene_id][total_metric] += 1
                             
                     self.error_events[thresh_name][scene_id]["frame_errors"].append(frame_errors)
+                
+                # Look out for Positive-Negative Pairs for IDS
+                if self.track_errors and threshold is not None:
+                    events = acc.events.loc[frame_id]
+                    matches = events[events.Type == "MATCH"]
+                    if frame_id > 0:
+                        switches = events[events.Type == "SWITCH"]
+                        for _, switch in switches.iterrows():
+                            curr_obj = switch.OId
+                            prev_gt = acc.events.loc[frame_id-1]['OId'].unique()
+                            curr_gt = acc.events.loc[frame_id]['OId'].unique()
+                            # Check if the hypothesis was matched in previous frame, both objects exist in consecutive frames
+                            if int(switch.HId) in prev_matches_H_to_O.keys() and switch.OId in prev_gt \
+                                and str(prev_matches_H_to_O[int(switch.HId)]) in curr_gt:
+                                
+                                # Special Case: 2 Ground Truths Swap Hypotheses
+                                hypothesis_switch = False
+                                # Check if the current object was in the previous frame
+                                if str(switch.OId) in prev_matches_O_to_H.keys():
+                                    # "Other Ground Truth" Object ID, Hypothesis in previous frame
+                                    prev_hypo2 = int(prev_matches_O_to_H[str(switch.OId)])
+                                    # Check if the other ground truth also incurred a switch
+                                    if not switches[switches.OId == prev_matches_H_to_O[int(switch.HId)]].empty:
+                                        curr_hypo2 = int(switches[switches.OId == prev_matches_H_to_O[int(switch.HId)]].HId.values[0])
+                                        # Check if the hypothesis is same on this frame and last frame for the"Other Ground Truth"
+                                        if prev_hypo2 == curr_hypo2:
+                                            hypothesis_switch = True
+
+                                neg_pos_pair = {
+                                    'scene_id': str(scene_id),
+                                    'negative' : {
+                                        'hypothesis_id': int(switch.HId),
+                                        'curr_object_id': str(switch.OId),
+                                        'curr_sample_token': str(sample_token),
+                                        'prev_object_id': str(prev_matches_H_to_O[int(switch.HId)]),
+                                        'prev_sample_token': str(sample_token_list[-1]),
+                                    },
+                                    'curr_positive':{
+                                        'object_id': str(switch.OId),
+                                        'curr_sample_token': str(sample_token),
+                                        'prev_sample_token': str(sample_token_list[-1]),
+                                    },
+                                    'prev_positive':{
+                                        'object_id': str(prev_matches_H_to_O[int(switch.HId)]),
+                                        'curr_sample_token': str(sample_token),
+                                        'prev_sample_token': str(sample_token_list[-1]),
+                                    },
+                                    'frame_num': int(frame_id),
+                                    'prev_frame_num': int(frame_id-1),
+                                    'class': self.class_name,
+                                    'hypothesis_switch': hypothesis_switch
+                                }
+
+                                if hypothesis_switch:
+                                    neg_pos_pair['negative2'] = {
+                                        'hypothesis_id': int(prev_hypo2),
+                                        'curr_object_id': str(prev_matches_H_to_O[int(switch.HId)]),
+                                        'curr_sample_token': str(sample_token),
+                                        'prev_object_id': str(switch.OId),
+                                        'prev_sample_token': str(sample_token_list[-1]),
+                                    }
+
+                                self.pos_neg_pairs_events[thresh_name].append(neg_pos_pair)
+                                
+                    # Update pairs for next frame
+                    prev_matches_H_to_O.clear()
+                    prev_matches_O_to_H.clear()
+                    for _, match in matches.iterrows():
+                        prev_matches_H_to_O[int(match.HId)] = match.OId
+                        prev_matches_O_to_H[match.OId] = int(match.HId)
 
                 # Render the boxes in this frame.
                 if self.class_name in self.render_classes and threshold is None:
@@ -445,7 +519,7 @@ class TrackingEvaluation(object):
                             'class': str(self.class_name)
                         }
                         self.ids_events[thresh_name].append(ids_instance)
-            
+
             accs.append(acc)
 
         # Merge accumulators

@@ -92,6 +92,9 @@ class TrackingEvaluation(object):
         self.frag_events = {}
         self.ids_events = {}
         self.pos_neg_pairs_events = {}
+        self.positives_pairs = []
+        self.negatives_pairs = []
+        self.reidentification_error_pairs = {}
 
         self.n_scenes = len(self.tracks_gt)
         self.nusc = nuscenes_info
@@ -248,6 +251,9 @@ class TrackingEvaluation(object):
             self.frag_events[thresh_name] = []
             self.ids_events[thresh_name] = []
             self.pos_neg_pairs_events[thresh_name] = []
+            self.positives_pairs = []
+            self.negatives_pairs = []
+            self.reidentification_error_pairs[thresh_name] = {}
 
         # Get mapping from scene_id to NuScenes Info index
         if self.track_errors:
@@ -519,8 +525,22 @@ class TrackingEvaluation(object):
                             'class': str(self.class_name)
                         }
                         self.ids_events[thresh_name].append(ids_instance)
-
+            
+            if self.track_errors and threshold is not None and self.class_name == "car":
+                negs, positives = self.get_neg_pos_pairs(acc.events, sample_token_list, scene_id)
+                self.positives_pairs = self.positives_pairs + positives
+                self.negatives_pairs = self.negatives_pairs + negs
             accs.append(acc)
+        
+        if self.track_errors and threshold is not None and self.class_name == "car":
+            self.reidentification_error_pairs[thresh_name] = {
+                'positives': self.positives_pairs,
+                'negatives': self.negatives_pairs,
+                'positive_count': len(self.positives_pairs),
+                'negative_count': len(self.negatives_pairs)
+            }
+        # Find Positive and Negative Error Pairs
+        
 
         # Merge accumulators
         acc_merged = MOTAccumulatorCustom.merge_event_dataframes(accs)
@@ -615,3 +635,95 @@ class TrackingEvaluation(object):
             prev_matches_loc.append(prev)
     
         return n_ids, loc_of_ids, prev_matches_loc
+
+    def get_neg_pos_pairs(self, events, sample_token_list, scene_token):
+        frame_ids = np.unique([x[0] for x in events.index])
+
+        # Get all the unique hypothesis in the scene
+        all_hypo = [events.loc[i]['HId'] for i in np.unique([x[0] for x in events.index])]
+        all_hypo = [y for x in all_hypo for y in x if str(y) != 'nan']
+        all_hypo = np.unique(all_hypo)
+
+        # Get all the unique ground truth in the scene
+        all_gt = [events.loc[i]['OId'] for i in np.unique([x[0] for x in events.index])]
+        all_gt = [y for x in all_gt for y in x if str(y) != 'nan']
+        all_gt = np.unique(all_gt)
+
+        # Get all the negatives
+        negatives = []
+        for hypo in all_hypo:
+            hypo_hist = events[events.Type != 'RAW'].loc[events.HId == hypo]
+            OId_hist = hypo_hist['OId'].to_list()
+            if len(OId_hist) == 1:
+                continue
+            prev_OId = OId_hist[0]
+
+            for i in range(1, len(OId_hist)):
+                curr_OId = OId_hist[i]
+                # False Positive case
+                if str(curr_OId) == 'nan' or str(prev_OId) == 'nan':
+                    prev_OId = OId_hist[i]
+                    continue
+                # Check if there was a switch, if so save neg. pair instance
+                if curr_OId != prev_OId:
+                    neg_pair = {
+                        'hypothesis_id': hypo,
+                        'scene_token': scene_token,
+                        'prev_sample_token': sample_token_list[i-1],
+                        'prev_object_token': prev_OId,
+                        'curr_sample_token': sample_token_list[i],
+                        'curr_object_token': curr_OId,                        
+                    }
+                    negatives.append(neg_pair)
+                prev_OId = OId_hist[i]
+
+        # Get all the positives
+        positives = []
+        for obj in all_gt:
+            obj_hist = events[events.Type != 'RAW'].loc[events.OId == obj]
+            HId_hist = obj_hist['HId'].to_list()
+            if len(HId_hist) == 1:
+                continue
+            prev_HId = HId_hist[0]
+            last_non_nan_HId = [HId_hist[0], sample_token_list[0]] # store hypo, sample_token
+            nan_counter = 0
+            for i in range(1, len(HId_hist)):
+                curr_HId = HId_hist[i]
+                # Make sure we have matched an instance of this object before
+                if str(last_non_nan_HId[0]) != 'nan': 
+                    # False Negative case / Fragmentation
+                    if str(curr_HId) == 'nan':
+                        nan_id = 'nan'
+                        if nan_counter > 0:
+                            nan_id = 'nan{}'.format(nan_counter)
+
+                        pos_pair = {
+                            'object_token': obj,
+                            'scene_token': scene_token,
+                            'prev_sample_token': last_non_nan_HId[1],
+                            'prev_hypothesis': last_non_nan_HId[0],
+                            'curr_sample_token': sample_token_list[i],
+                            'curr_hypothesis': nan_id,                        
+                        }
+                        positives.append(pos_pair)
+                        nan_counter += 1
+                        prev_OId = HId_hist[i]
+                        continue
+                    # Check if there was a switch, if so save pos. pair instance
+                    if curr_HId != prev_HId:
+                        pos_pair = {
+                            'object_token': obj,
+                            'scene_token': scene_token,
+                            'prev_sample_token': last_non_nan_HId[1],
+                            'prev_hypothesis': last_non_nan_HId[0],
+                            'curr_sample_token': sample_token_list[i],
+                            'curr_hypothesis': curr_HId,                        
+                        }
+                        positives.append(pos_pair)
+                    
+                prev_HId = HId_hist[i]
+                if str(curr_HId) != 'nan':
+                    last_non_nan_HId = [HId_hist[i], sample_token_list[i]]
+                nan_counter = 0
+        
+        return negatives, positives

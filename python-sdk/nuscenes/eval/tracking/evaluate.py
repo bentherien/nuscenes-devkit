@@ -44,6 +44,7 @@ class TrackingEval:
                  nusc_version: str,
                  nusc_dataroot: str,
                  verbose: bool = True,
+                 output_errors: bool = False,
                  render_classes: List[str] = None):
         """
         Initialize a TrackingEval object.
@@ -62,6 +63,7 @@ class TrackingEval:
         self.output_dir = output_dir
         self.verbose = verbose
         self.render_classes = render_classes
+        self.output_errors = output_errors
 
         # Check result file exists.
         assert os.path.exists(result_path), 'Error: The result file does not exist!'
@@ -76,7 +78,7 @@ class TrackingEval:
         # Initialize NuScenes object.
         # We do not store it in self to let garbage collection take care of it and save memory.
         nusc = NuScenes(version=nusc_version, verbose=verbose, dataroot=nusc_dataroot)
-
+        self.nusc = nusc
         # Load data.
         if verbose:
             print('Initializing nuScenes tracking evaluation')
@@ -113,6 +115,14 @@ class TrackingEval:
         start_time = time.time()
         metrics = TrackingMetrics(self.cfg)
 
+        if self.output_errors:
+            error_tracker = {}
+            error_tracker_coi = [cn for cn in self.cfg.class_names] # classes of interest
+            fragment_tracker = {}
+            ids_tracker = {}
+            neg_pos_pair_tracker = {}
+            reidentification_pairs_tracker = {}
+
         # -----------------------------------
         # Step 1: Accumulate metric data for all classes and distance thresholds.
         # -----------------------------------
@@ -127,13 +137,48 @@ class TrackingEval:
                                          metric_worst=self.cfg.metric_worst,
                                          verbose=self.verbose,
                                          output_dir=self.output_dir,
-                                         render_classes=self.render_classes)
+                                         render_classes=self.render_classes,
+                                         track_errors=self.output_errors,
+                                         nuscenes_info=self.nusc)
             curr_md = curr_ev.accumulate()
             metric_data_list.set(curr_class_name, curr_md)
+
+            # Only track errors for classes of interest
+            if self.output_errors and curr_class_name in error_tracker_coi:
+                error_tracker[curr_class_name] = curr_ev.error_events
+                fragment_tracker[curr_class_name] = curr_ev.frag_events
+                ids_tracker[curr_class_name] = curr_ev.ids_events
+                neg_pos_pair_tracker[curr_class_name] = curr_ev.pos_neg_pairs_events
+                reidentification_pairs_tracker[curr_class_name] = curr_ev.reidentification_error_pairs
 
         for class_name in self.cfg.class_names:
             accumulate_class(class_name)
 
+        # Save Errors in JSON
+        if self.output_errors:
+            error_save_dir = os.path.join(self.output_dir, "errors.json")
+            with open(error_save_dir, "w") as file:
+                json.dump(error_tracker, file)
+            
+            frags_save_dir = os.path.join(self.output_dir, "fragments.json")
+            with open(frags_save_dir, "w") as file:
+                json.dump(fragment_tracker, file)
+
+            ids_save_dir = os.path.join(self.output_dir, "ids.json")
+            with open(ids_save_dir, "w") as file:
+                json.dump(ids_tracker, file)
+            
+            neg_pos_pair_dir = os.path.join(self.output_dir, "neg_pos_pair.json")
+            with open(neg_pos_pair_dir, "w") as file:
+                json.dump(neg_pos_pair_tracker, file)
+
+            neg_pos_pair_dir = os.path.join(self.output_dir, "neg_pos_pair.json")
+            with open(neg_pos_pair_dir, "w") as file:
+                json.dump(neg_pos_pair_tracker, file)
+
+            reid_pairs_dir = os.path.join(self.output_dir, "reid_pairs.json")
+            with open(reid_pairs_dir, "w") as file:
+                json.dump(reidentification_pairs_tracker, file)
         # -----------------------------------
         # Step 2: Aggregate metrics from the metric data.
         # -----------------------------------
